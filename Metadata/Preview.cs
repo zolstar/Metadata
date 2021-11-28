@@ -1,4 +1,6 @@
-﻿using System.Collections.Generic;
+﻿using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.Net;
 using System.Threading.Tasks;
 using Microsoft.Azure.Functions.Worker;
@@ -21,14 +23,42 @@ namespace Metadata
     {
         [Function("Preview")]
         public static async Task<HttpResponseData> Run(
-            [HttpTrigger(AuthorizationLevel.Function, "get")] HttpRequestData req,
+            [HttpTrigger(AuthorizationLevel.Function, "get", Route = "preview")] HttpRequestData req,
             string url,
             FunctionContext executionContext)
         {
-            // TODO validate url, check allowed domains
             var logger = executionContext.GetLogger("Hook");
             logger.LogInformation("C# HTTP trigger function processed a request.");
+
+            // validate url
+            if (!ValidateUrl(url))
+            {
+                return req.CreateResponse(HttpStatusCode.BadRequest);
+            }
+
+            // check allowed hosts
+            string[] allowedHost = {"www.bandlab.com"};
+            Uri hostUri = new Uri(url);   
+            string host = hostUri.Host;
+
+            if (!allowedHost.Contains(host))
+            {
+                return req.CreateResponse(HttpStatusCode.BadRequest);
+            }
+
+            var map = await ExtractMetadata(url);
             
+            var response = req.CreateResponse(HttpStatusCode.OK);
+            response.Headers.Add("Content-Type", "application/json; charset=utf-8");
+            string jsonString = JsonSerializer.Serialize(map);  
+            await response.WriteStringAsync(jsonString);
+
+            return response;
+            
+        }
+
+        private static async Task<Dictionary<string, string>> ExtractMetadata(string url)
+        {
             using var playwright = await Playwright.CreateAsync();
             await using var browser = await playwright.Chromium.LaunchAsync();
             var page = await browser.NewPageAsync();
@@ -61,14 +91,17 @@ namespace Metadata
                 map.Add(metaSelector.KeyName, value);
             }
             await browser.CloseAsync();
-            
-            var response = req.CreateResponse(HttpStatusCode.OK);
-            response.Headers.Add("Content-Type", "application/json; charset=utf-8");
-            string jsonString = JsonSerializer.Serialize(map);  
-            await response.WriteStringAsync(jsonString);
-
-            return response;
-            
+            return map;
+        }
+        
+        private static bool ValidateUrl(string url)
+        {
+            if (Uri.TryCreate(url, UriKind.Absolute, out var validatedUri))
+            {
+                //If true: validatedUri contains a valid Uri. Check for the scheme in addition.
+                return (validatedUri.Scheme == Uri.UriSchemeHttp || validatedUri.Scheme == Uri.UriSchemeHttps);
+            }
+            return false;
         }
     }
 }
